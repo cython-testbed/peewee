@@ -367,6 +367,7 @@ RESULTS_MODELS = 2
 RESULTS_TUPLES = 3
 RESULTS_DICTS = 4
 RESULTS_AGGREGATE_MODELS = 5
+RESULTS_NAMEDTUPLES = 6
 
 # To support "django-style" double-underscore filters, create a mapping between
 # operation name and operation code, e.g. "__eq" == OP.EQ.
@@ -1425,7 +1426,8 @@ class ObjectIdDescriptor(object):
 
 class ForeignKeyField(IntegerField):
     def __init__(self, rel_model, related_name=None, on_delete=None,
-                 on_update=None, extra=None, to_field=None, *args, **kwargs):
+                 on_update=None, extra=None, to_field=None,
+                 object_id_name=None, *args, **kwargs):
         if rel_model != 'self' and not \
                 isinstance(rel_model, (Proxy, DeferredRelation)) and not \
                 issubclass(rel_model, Model):
@@ -1438,6 +1440,7 @@ class ForeignKeyField(IntegerField):
         self.on_update = on_update
         self.extra = extra
         self.to_field = to_field
+        self.object_id_name = object_id_name
         super(ForeignKeyField, self).__init__(*args, **kwargs)
 
     def clone_base(self, **kwargs):
@@ -1448,6 +1451,7 @@ class ForeignKeyField(IntegerField):
             on_update=self.on_update,
             extra=self.extra,
             to_field=self.to_field,
+            object_id_name=self.object_id_name,
             **kwargs)
 
     def _get_descriptor(self):
@@ -1477,9 +1481,17 @@ class ForeignKeyField(IntegerField):
 
         self.name = name
         self.model_class = model_class
-        self.db_column = obj_id_name = self.db_column or '%s_id' % self.name
-        if obj_id_name == self.name:
-            obj_id_name += '_id'
+        self.db_column = self.db_column or '%s_id' % self.name
+        obj_id_name = self.object_id_name
+
+        if not obj_id_name:
+            obj_id_name = self.db_column
+            if obj_id_name == self.name:
+                obj_id_name += '_id'
+        elif obj_id_name == self.name:
+            raise ValueError('Cannot set a foreign key object_id_name to '
+                             'the same name as the field itself.')
+
         if not self.verbose_name:
             self.verbose_name = re.sub('_+', ' ', name).title()
 
@@ -2434,6 +2446,16 @@ class DictQueryResultWrapper(ExtQueryResultWrapper):
 if _DictQueryResultWrapper is None:
     _DictQueryResultWrapper = DictQueryResultWrapper
 
+class NamedTupleQueryResultWrapper(ExtQueryResultWrapper):
+    def initialize(self, description):
+        super(NamedTupleQueryResultWrapper, self).initialize(description)
+        columns = [column for _, column, _ in self.conv]
+        self.constructor = namedtuple('Row', columns)
+
+    def process_row(self, row):
+        return self.constructor(*[f(row[i]) if f is not None else row[i]
+                                  for i, _, f in self.conv])
+
 class ModelQueryResultWrapper(QueryResultWrapper):
     def initialize(self, description):
         self.column_map, model_set = self.generate_column_map()
@@ -3005,6 +3027,7 @@ class SelectQuery(Query):
         self._naive = False
         self._tuples = False
         self._dicts = False
+        self._namedtuples = False
         self._aggregate_rows = False
         self._alias = None
         self._qr = None
@@ -3035,6 +3058,7 @@ class SelectQuery(Query):
         query._naive = self._naive
         query._tuples = self._tuples
         query._dicts = self._dicts
+        query._namedtuples = self._namedtuples
         query._aggregate_rows = self._aggregate_rows
         query._alias = self._alias
         return query
@@ -3122,10 +3146,20 @@ class SelectQuery(Query):
     @returns_clone
     def tuples(self, tuples=True):
         self._tuples = tuples
+        if tuples:
+            self._dicts = self._namedtuples = False
 
     @returns_clone
     def dicts(self, dicts=True):
         self._dicts = dicts
+        if dicts:
+            self._tuples = self._namedtuples = False
+
+    @returns_clone
+    def namedtuples(self, namedtuples=True):
+        self._namedtuples = namedtuples
+        if namedtuples:
+            self._dicts = self._tuples = False
 
     @returns_clone
     def aggregate_rows(self, aggregate_rows=True):
@@ -3223,6 +3257,8 @@ class SelectQuery(Query):
             return self.database.get_result_wrapper(RESULTS_TUPLES)
         elif self._dicts:
             return self.database.get_result_wrapper(RESULTS_DICTS)
+        elif self._namedtuples:
+            return self.database.get_result_wrapper(RESULTS_NAMEDTUPLES)
         elif self._naive or not self._joins or self.verify_naive():
             return self.database.get_result_wrapper(RESULTS_NAIVE)
         elif self._aggregate_rows:
@@ -3305,6 +3341,8 @@ class CompoundSelect(SelectQuery):
             return self.database.get_result_wrapper(RESULTS_TUPLES)
         elif self._dicts:
             return self.database.get_result_wrapper(RESULTS_DICTS)
+        elif self._namedtuples:
+            return self.database.get_result_wrapper(RESULTS_NAMEDTUPLES)
         elif self._aggregate_rows:
             return self.database.get_result_wrapper(RESULTS_AGGREGATE_MODELS)
 
@@ -3320,6 +3358,7 @@ class _WriteQuery(Query):
         self._returning = None
         self._tuples = False
         self._dicts = False
+        self._namedtuples = False
         self._qr = None
         super(_WriteQuery, self).__init__(model_class)
 
@@ -3329,6 +3368,7 @@ class _WriteQuery(Query):
             query._returning = list(self._returning)
             query._tuples = self._tuples
             query._dicts = self._dicts
+            query._namedtuples = self._namedtuples
         return query
 
     def requires_returning(method):
@@ -3354,11 +3394,22 @@ class _WriteQuery(Query):
     @returns_clone
     def tuples(self, tuples=True):
         self._tuples = tuples
+        if tuples:
+            self._dicts = self._namedtuples = False
 
     @requires_returning
     @returns_clone
     def dicts(self, dicts=True):
         self._dicts = dicts
+        if dicts:
+            self._tuples = self._namedtuples = False
+
+    @requires_returning
+    @returns_clone
+    def namedtuples(self, namedtuples=True):
+        self._namedtuples = namedtuples
+        if namedtuples:
+            self._dicts = self._tuples = False
 
     def get_result_wrapper(self):
         if self._returning is not None:
@@ -3366,6 +3417,8 @@ class _WriteQuery(Query):
                 return self.database.get_result_wrapper(RESULTS_TUPLES)
             elif self._dicts:
                 return self.database.get_result_wrapper(RESULTS_DICTS)
+            elif self._namedtuples:
+                return self.database.get_result_wrapper(RESULTS_NAMEDTUPLES)
         return self.database.get_result_wrapper(RESULTS_NAIVE)
 
     def _execute_with_result_wrapper(self):
@@ -3744,6 +3797,8 @@ class Database(object):
         elif wrapper_type == RESULTS_DICTS:
             return (_DictQueryResultWrapper if self.use_speedups
                     else DictQueryResultWrapper)
+        elif wrapper_type == RESULTS_NAMEDTUPLES:
+            return NamedTupleQueryResultWrapper
         elif wrapper_type == RESULTS_AGGREGATE_MODELS:
             return AggregateQueryResultWrapper
         else:
