@@ -17,7 +17,7 @@ services:
   - mysql
 install:
   - pip install psycopg2 pymysql
-  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/3134ec551ae09b880d71999f16f035683b47a8dc.zip
+  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/0.27rc1.zip
 before_script:
   - python setup.py build_ext -i
   - psql -c 'drop database if exists peewee_test;' -U postgres
