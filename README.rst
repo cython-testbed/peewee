@@ -1,38 +1,25 @@
-Attention
----------
-
-I've pushed the alpha branch of Peewee 3.0, which is a more-or-less total rewrite. The APIs are all mostly backwards-compatible, though some features and extension modules have been removed. Check it out if you're curious: https://github.com/coleifer/peewee/tree/3.0a
-
-.. image:: http://media.charlesleifer.com/blog/photos/p1423749536.32.png
+.. image:: http://media.charlesleifer.com/blog/photos/peewee3-logo.png
 
 peewee
 ======
 
 Peewee is a simple and small ORM. It has few (but expressive) concepts, making it easy to learn and intuitive to use.
 
-* A small, expressive ORM
-* Written in python with support for versions 2.6+ and 3.2+.
-* built-in support for sqlite, mysql and postgresql
-* tons of extensions available in the `playhouse <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html>`_
-
-  * `Postgresql HStore, JSON, arrays and more <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#postgres-ext>`_
-  * `SQLite full-text search, user-defined functions, virtual tables and more <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#sqlite-ext>`_
-  * `Schema migrations <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#migrate>`_ and `model code generator <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#pwiz>`_
-  * `Connection pool <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#pool>`_
-  * `Encryption <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#sqlcipher-ext>`_
-  * `and much, much more... <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html>`_
+* a small, expressive ORM
+* python 2.7+ and 3.4+ (developed with 3.6)
+* supports sqlite, mysql and postgresql
+* tons of `extensions <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html>`_
 
 .. image:: https://travis-ci.org/coleifer/peewee.svg?branch=master
   :target: https://travis-ci.org/coleifer/peewee
 
-New to peewee? Here is a list of documents you might find most helpful when getting
-started:
+New to peewee? These may help:
 
-* `Quickstart guide <http://docs.peewee-orm.com/en/latest/peewee/quickstart.html#quickstart>`_ -- this guide covers all the essentials. It will take you between 5 and 10 minutes to go through it.
-* `Guide to the various query operators <http://docs.peewee-orm.com/en/latest/peewee/querying.html#query-operators>`_ describes how to construct queries and combine expressions.
-* `Field types table <http://docs.peewee-orm.com/en/latest/peewee/models.html#field-types-table>`_ lists the various field types peewee supports and the parameters they accept.
-
-For flask helpers, check out the `flask_utils extension module <http://docs.peewee-orm.com/en/latest/peewee/playhouse.html#flask-utils>`_. You can also use peewee with the popular extension `flask-admin <https://flask-admin.readthedocs.io/en/latest/>`_ to provide a Django-like admin interface for managing peewee models.
+* `Quickstart <http://docs.peewee-orm.com/en/latest/peewee/quickstart.html#quickstart>`_
+* `Example twitter app <http://docs.peewee-orm.com/en/latest/peewee/example.html>`_
+* `Models and fields <http://docs.peewee-orm.com/en/latest/peewee/models.html>`_
+* `Querying <http://docs.peewee-orm.com/en/latest/peewee/querying.html>`_
+* `Relationships and joins <http://docs.peewee-orm.com/en/latest/peewee/relationships.html>`_
 
 Examples
 --------
@@ -42,10 +29,10 @@ Defining models is similar to Django or SQLAlchemy:
 .. code-block:: python
 
     from peewee import *
-    from playhouse.sqlite_ext import SqliteExtDatabase
     import datetime
 
-    db = SqliteExtDatabase('my_database.db')
+
+    db = SqliteDatabase('my_database.db')
 
     class BaseModel(Model):
         class Meta:
@@ -55,7 +42,7 @@ Defining models is similar to Django or SQLAlchemy:
         username = CharField(unique=True)
 
     class Tweet(BaseModel):
-        user = ForeignKeyField(User, related_name='tweets')
+        user = ForeignKeyField(User, backref='tweets')
         message = TextField()
         created_date = DateTimeField(default=datetime.datetime.now)
         is_published = BooleanField(default=True)
@@ -84,19 +71,18 @@ Queries are expressive and composable:
 .. code-block:: python
 
     # A simple query selecting a user.
-    User.get(User.username == 'charles')
+    User.get(User.username == 'charlie')
 
-    # Get tweets created by one of several users. The "<<" operator
-    # corresponds to the SQL "IN" operator.
+    # Get tweets created by one of several users.
     usernames = ['charlie', 'huey', 'mickey']
-    users = User.select().where(User.username << usernames)
-    tweets = Tweet.select().where(Tweet.user << users)
+    users = User.select().where(User.username.in_(usernames))
+    tweets = Tweet.select().where(Tweet.user.in_(users))
 
     # We could accomplish the same using a JOIN:
     tweets = (Tweet
               .select()
               .join(User)
-              .where(User.username << usernames))
+              .where(User.username.in_(usernames)))
 
     # How many tweets were published today?
     tweets_today = (Tweet
@@ -118,10 +104,9 @@ Queries are expressive and composable:
              .order_by(tweet_ct.desc()))
 
     # Do an atomic update
-    Counter.update(count=Counter.count + 1).where(
-        Counter.url == request.url)
+    Counter.update(count=Counter.count + 1).where(Counter.url == request.url)
 
-Check out the `example app <http://docs.peewee-orm.com/en/latest/peewee/example.html>`_ for a working Twitter-clone website written with Flask.
+Check out the `example twitter app <http://docs.peewee-orm.com/en/latest/peewee/example.html>`_.
 
 Learning more
 -------------
