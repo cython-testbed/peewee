@@ -7,34 +7,49 @@ https://github.com/coleifer/peewee/releases
 
 ## master
 
+[View commits](https://github.com/coleifer/peewee/compare/3.7.0...master)
+
+## 3.7.0
+
 **Backwards-incompatible changes**
 
 * Pool database `close_all()` method renamed to `close_idle()` to better
   reflect the actual behavior.
+* Databases will now raise `InterfaceError` when `connect()` or `close()` are
+  called on an uninitialized, deferred database object.
 
 **New features**
 
+* Add methods to the migrations extension to support adding and dropping table
+  constraints.
 * Add [Model.bulk_create()](http://docs.peewee-orm.com/en/latest/peewee/api.html#Model.bulk_create)
   method for bulk-inserting unsaved model instances.
+* Add `close_stale()` method to the connection pool to support closing stale
+  connections.
 * The `FlaskDB` class in `playhouse.flask_utils` now accepts a `model_class`
   parameter, which can be used to specify a custom base-class for models.
 
 **Bugfixes**
 
+* Parentheses were not added to subqueries used in function calls with more
+  than one argument.
+* Fixed bug when attempting to serialize many-to-many fields which were created
+  initially with a `DeferredThroughModel`, see #1708.
 * Fixed bug when using the Postgres `ArrayField` with an array of `BlobField`.
-* Fixed bug where parentheses were not added to subqueries used in function
-  calls with more than one argument.
-* Fixed bug which prevented `Proxy` databases from being used as a
-  context-manager.
+* Allow `Proxy` databases to be used as a context-manager.
 * Fixed bug where the APSW driver was referring to the SQLite version from the
   standard library `sqlite3` driver, rather than from `apsw`.
-* Fixed missing import in migrations library, which would cause errors when
+* Reflection library attempts to wrap server-side column defaults in quotation
+  marks if the column data-type is text/varchar.
+* Missing import in migrations library, which would cause errors when
   attempting to add indexes whose name exceeded 64 chars.
+* When using the Postgres connection pool, ensure any open/pending transactions
+  are rolled-back when the connection is recycled.
 * Even *more* changes to the `setup.py` script. In this case I've added a
   helper function which will reliably determine if the SQLite3 extensions can
   be built. This follows the approach taken by the Python YAML package.
 
-[View commits](https://github.com/coleifer/peewee/compare/3.6.4...master)
+[View commits](https://github.com/coleifer/peewee/compare/3.6.4...3.7.0)
 
 ## 3.6.4
 

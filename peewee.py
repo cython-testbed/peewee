@@ -57,7 +57,7 @@ except ImportError:
         mysql = None
 
 
-__version__ = '3.6.4'
+__version__ = '3.7.0'
 __all__ = [
     'AsIs',
     'AutoField',
@@ -1273,6 +1273,12 @@ class Expression(ColumnBase):
         else:
             overrides['converter'] = None
 
+        op_in = self.op == OP.IN or self.op == OP.NOT_IN
+        if op_in:
+            overrides['op_in'] = True
+        elif ctx.state.op_in:
+            overrides['op_in'] = False
+
         if ctx.state.operations:
             op_sql = ctx.state.operations.get(self.op, self.op)
         else:
@@ -1281,8 +1287,7 @@ class Expression(ColumnBase):
         with ctx(**overrides):
             # Postgresql reports an error for IN/NOT IN (), so convert to
             # the equivalent boolean expression.
-            if (self.op == OP.IN or self.op == OP.NOT_IN) and \
-               Context().parse(self.rhs)[0] == '()':
+            if op_in and Context().parse(self.rhs)[0] == '()':
                 return ctx.literal('0 = 1' if self.op == OP.IN else '1 = 1')
 
             return (ctx
@@ -2047,9 +2052,13 @@ class Select(SelectBase):
                 ctx.literal(' ')
                 ctx.sql(SQL(self._for_update))
 
-        if not ctx.state.in_function:
-            ctx = self.apply_alias(ctx)
-        return ctx
+        # If the subquery is inside a function -or- we are evaluating a
+        # subquery on either side of an IN expression w/o an explicit alias, do
+        # not generate an alias + AS clause.
+        if ctx.state.in_function or (ctx.state.op_in and self._alias is None):
+            return ctx
+
+        return self.apply_alias(ctx)
 
 
 class _WriteQuery(Query):
@@ -2208,8 +2217,17 @@ class Insert(_WriteQuery):
             columns = sorted(accum, key=lambda obj: obj.get_sort_key(ctx))
             rows_iter = itertools.chain(iter((row,)), rows_iter)
         else:
-            columns = list(columns)
-            value_lookups = dict((column, column) for column in columns)
+            clean_columns = []
+            value_lookups = {}
+            for column in columns:
+                if isinstance(column, basestring):
+                    column_obj = getattr(self.table, column)
+                else:
+                    column_obj = column
+                value_lookups[column_obj] = column
+                clean_columns.append(column_obj)
+
+            columns = clean_columns
             for col in sorted(defaults, key=lambda obj: obj.get_sort_key(ctx)):
                 if col not in value_lookups:
                     columns.append(col)
@@ -4542,14 +4560,16 @@ class DeferredForeignKey(Field):
 
 
 class DeferredThroughModel(object):
+    def __init__(self):
+        self._refs = []
+
     def set_field(self, model, field, name):
-        self.model = model
-        self.field = field
-        self.name = name
+        self._refs.append((model, field, name))
 
     def set_model(self, through_model):
-        self.field.through_model = through_model
-        self.field.bind(self.model, self.name)
+        for src_model, m2mfield, name in self._refs:
+            m2mfield.through_model = through_model
+            src_model._meta.add_field(name, m2mfield)
 
 
 class MetaField(Field):
@@ -4585,16 +4605,21 @@ class ManyToManyFieldAccessor(FieldAccessor):
 class ManyToManyField(MetaField):
     accessor_class = ManyToManyFieldAccessor
 
-    def __init__(self, model, backref=None, through_model=None,
-                 _is_backref=False):
-        if through_model is not None and not (
-                isinstance(through_model, DeferredThroughModel) or
-                is_model(through_model)):
-            raise TypeError('Unexpected value for through_model. Expected '
-                            'Model or DeferredThroughModel.')
+    def __init__(self, model, backref=None, through_model=None, on_delete=None,
+                 on_update=None, _is_backref=False):
+        if through_model is not None:
+            if not (isinstance(through_model, DeferredThroughModel) or
+                    is_model(through_model)):
+                raise TypeError('Unexpected value for through_model. Expected '
+                                'Model or DeferredThroughModel.')
+            if not _is_backref and (on_delete is not None or on_update is not None):
+                raise ValueError('Cannot specify on_delete or on_update when '
+                                 'through_model is specified.')
         self.rel_model = model
         self.backref = backref
         self.through_model = through_model
+        self._on_delete = on_delete
+        self._on_update = on_update
         self._is_backref = _is_backref
 
     def _get_descriptor(self):
@@ -4610,10 +4635,13 @@ class ManyToManyField(MetaField):
         if not self._is_backref:
             many_to_many_field = ManyToManyField(
                 self.model,
+                backref=name,
                 through_model=self.through_model,
+                on_delete=self._on_delete,
+                on_update=self._on_update,
                 _is_backref=True)
-            backref = self.backref or model._meta.name + 's'
-            self.rel_model._meta.add_field(backref, many_to_many_field)
+            self.backref = self.backref or model._meta.name + 's'
+            self.rel_model._meta.add_field(self.backref, many_to_many_field)
 
     def get_models(self):
         return [model for _, model in sorted((
@@ -4634,8 +4662,10 @@ class ManyToManyField(MetaField):
                      True),)
 
             attrs = {
-                lhs._meta.name: ForeignKeyField(lhs),
-                rhs._meta.name: ForeignKeyField(rhs)}
+                lhs._meta.name: ForeignKeyField(lhs, on_delete=self._on_delete,
+                                                on_update=self._on_update),
+                rhs._meta.name: ForeignKeyField(rhs, on_delete=self._on_delete,
+                                                on_update=self._on_update)}
             attrs['Meta'] = Meta
 
             self.through_model = type(
@@ -4759,7 +4789,11 @@ class SchemaManager(object):
 
     @property
     def database(self):
-        return self._database or self.model._meta.database
+        db = self._database or self.model._meta.database
+        if db is None:
+            raise ImproperlyConfigured('database attribute does not appear to '
+                                       'be set on the model: %s' % self.model)
+        return db
 
     @database.setter
     def database(self, value):
@@ -5129,7 +5163,7 @@ class Metadata(object):
 
         if isinstance(field, ForeignKeyField):
             self.add_ref(field)
-        elif isinstance(field, ManyToManyField):
+        elif isinstance(field, ManyToManyField) and field.name:
             self.add_manytomany(field)
 
     def remove_field(self, field_name):
@@ -5690,8 +5724,8 @@ class Model(with_metaclass(ModelBase, Node)):
 
     @classmethod
     def table_exists(cls):
-        meta = cls._meta
-        return meta.database.table_exists(meta.table.__name__, meta.schema)
+        M = cls._meta
+        return cls._schema.database.table_exists(M.table.__name__, M.schema)
 
     @classmethod
     def create_table(cls, safe=True, **options):
@@ -5700,7 +5734,7 @@ class Model(with_metaclass(ModelBase, Node)):
                            '"safe" for the create_table() method.')
             safe = options.pop('fail_silently')
 
-        if safe and not cls._meta.database.safe_create_index \
+        if safe and not cls._schema.database.safe_create_index \
            and cls.table_exists():
             return
         if cls._meta.temporary:
@@ -5709,7 +5743,7 @@ class Model(with_metaclass(ModelBase, Node)):
 
     @classmethod
     def drop_table(cls, safe=True, drop_sequences=True, **options):
-        if safe and not cls._meta.database.safe_drop_index \
+        if safe and not cls._schema.database.safe_drop_index \
            and not cls.table_exists():
             return
         if cls._meta.temporary:
@@ -6085,13 +6119,17 @@ class ModelSelect(BaseModelSelect, Select):
     def join(self, dest, join_type='INNER', on=None, src=None, attr=None):
         src = self._join_ctx if src is None else src
 
-        on, attr, constructor = self._normalize_join(src, dest, on, attr)
-        if attr:
-            self._joins.setdefault(src, [])
-            self._joins[src].append((dest, attr, constructor))
+        if join_type != JOIN.CROSS:
+            on, attr, constructor = self._normalize_join(src, dest, on, attr)
+            if attr:
+                self._joins.setdefault(src, [])
+                self._joins[src].append((dest, attr, constructor))
+        elif on is not None:
+            raise ValueError('Cannot specify on clause with cross join.')
 
         if not self._from_list:
             raise ValueError('No sources to join on.')
+
         item = self._from_list.pop()
         self._from_list.append(Join(item, dest, join_type, on))
 

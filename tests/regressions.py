@@ -6,6 +6,7 @@ from .base import TestModel
 from .base import get_in_memory_db
 from .base import requires_models
 from .base import requires_mysql
+from .base_models import Tweet
 from .base_models import User
 
 
@@ -233,3 +234,64 @@ class TestSubqueryFunctionCall(BaseTestCase):
             'SELECT "t1"."data" FROM "sample" AS "t1" '
             'WHERE NOT EXISTS('
             'SELECT 1 FROM "sample" AS "s2" WHERE ("s2"."key" = ?))'), ['foo'])
+
+
+class A(TestModel):
+    id = IntegerField(primary_key=True)
+class B(TestModel):
+    id = IntegerField(primary_key=True)
+class C(TestModel):
+    id = IntegerField(primary_key=True)
+    a = ForeignKeyField(A)
+    b = ForeignKeyField(B)
+
+class TestCrossJoin(ModelTestCase):
+    requires = [A, B, C]
+
+    def setUp(self):
+        super(TestCrossJoin, self).setUp()
+        A.insert_many([(1,), (2,), (3,)], fields=[A.id]).execute()
+        B.insert_many([(1,), (2,)], fields=[B.id]).execute()
+        C.insert_many([
+            (1, 1, 1),
+            (2, 1, 2),
+            (3, 2, 1)], fields=[C.id, C.a, C.b]).execute()
+
+    def test_cross_join(self):
+        query = (A
+                 .select(A.id.alias('aid'), B.id.alias('bid'))
+                 .join(B, JOIN.CROSS)
+                 .join(C, JOIN.LEFT_OUTER, on=(
+                     (C.a == A.id) &
+                     (C.b == B.id)))
+                 .where(C.id.is_null())
+                 .order_by(A.id, B.id))
+        self.assertEqual(list(query.tuples()), [(2, 2), (3, 1), (3, 2)])
+
+
+class TestSubqueryInSelect(ModelTestCase):
+    requires = [User, Tweet]
+
+    def setUp(self):
+        super(TestSubqueryInSelect, self).setUp()
+        data = (
+            ('huey', ('meow', 'hiss', 'purr')),
+            ('mickey', ('woof', 'bark')),
+            ('zaizee', ()))
+        with self.database.atomic():
+            for username, tweets in data:
+                user = User.create(username=username)
+                for tweet in tweets:
+                    Tweet.create(user=user, content=tweet)
+
+    def test_subquery_in_select(self):
+        subq = User.select().where(User.username == 'huey')
+        query = (Tweet
+                 .select(Tweet.content, Tweet.user.in_(subq).alias('is_huey'))
+                 .order_by(Tweet.content))
+        self.assertEqual([(r.content, r.is_huey) for r in query], [
+            ('bark', False),
+            ('hiss', True),
+            ('meow', True),
+            ('purr', True),
+            ('woof', False)])
