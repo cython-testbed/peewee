@@ -367,16 +367,19 @@ class SqliteMetadata(Metadata):
         'date': DateField,
         'datetime': DateTimeField,
         'decimal': DecimalField,
+        'float': FloatField,
         'integer': IntegerField,
         'integer unsigned': IntegerField,
         'int': IntegerField,
         'long': BigIntegerField,
+        'numeric': DecimalField,
         'real': FloatField,
         'smallinteger': IntegerField,
         'smallint': IntegerField,
         'smallint unsigned': IntegerField,
         'text': TextField,
         'time': TimeField,
+        'varchar': CharField,
     }
 
     begin = '(?:["\[\(]+)?'
