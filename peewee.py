@@ -20,6 +20,10 @@ import threading
 import time
 import uuid
 import warnings
+try:
+    from collections.abc import Mapping
+except ImportError:
+    from collections import Mapping
 
 try:
     from pysqlite3 import dbapi2 as pysq3
@@ -57,7 +61,7 @@ except ImportError:
         mysql = None
 
 
-__version__ = '3.7.0'
+__version__ = '3.7.1'
 __all__ = [
     'AsIs',
     'AutoField',
@@ -1976,8 +1980,8 @@ class Select(SelectBase):
                 grouping.append(column)
         self._group_by = grouping
 
-    @Node.copy
     def group_by_extend(self, *values):
+        """@Node.copy used from group_by() call"""
         group_by = tuple(self._group_by or ()) + values
         return self.group_by(*group_by)
 
@@ -2253,7 +2257,7 @@ class Insert(_WriteQuery):
         all_values = []
         for row in rows_iter:
             values = []
-            is_dict = isinstance(row, collections.Mapping)
+            is_dict = isinstance(row, Mapping)
             for i, (column, converter) in enumerate(columns_converters):
                 try:
                     if is_dict:
@@ -2416,7 +2420,7 @@ class ModelIndex(Index):
             name = self._generate_name_from_fields(model, fields)
         if using is None:
             for field in fields:
-                if getattr(field, 'index_type', None):
+                if isinstance(field, Field) and hasattr(field, 'index_type'):
                     using = field.index_type
         super(ModelIndex, self).__init__(
             name=name,
@@ -4850,6 +4854,13 @@ class SchemaManager(object):
         constraints.extend(self._create_table_option_sql(options))
         ctx.sql(EnclosedNodeList(columns + constraints))
 
+        if meta.table_settings is not None:
+            table_settings = ensure_tuple(meta.table_settings)
+            for setting in table_settings:
+                if not isinstance(setting, basestring):
+                    raise ValueError('table_settings must be strings')
+                ctx.literal(' ').literal(setting)
+
         if meta.without_rowid:
             ctx.literal(' WITHOUT ROWID')
         return ctx
@@ -4865,7 +4876,7 @@ class SchemaManager(object):
                 if is_model(value):
                     value = value._meta.table
                 else:
-                    value = SQL(value)
+                    value = SQL(str(value))
             accum.append(NodeList((SQL(key), value), glue='='))
         return accum
 
@@ -5004,7 +5015,7 @@ class Metadata(object):
                  primary_key=None, constraints=None, schema=None,
                  only_save_dirty=False, table_alias=None, depends_on=None,
                  options=None, db_table=None, table_function=None,
-                 without_rowid=False, temporary=False,
+                 table_settings=None, without_rowid=False, temporary=False,
                  legacy_table_names=True, **kwargs):
         if db_table is not None:
             __deprecated__('"db_table" has been deprecated in favor of '
@@ -5045,6 +5056,7 @@ class Metadata(object):
         self.only_save_dirty = only_save_dirty
         self.table_alias = table_alias
         self.depends_on = depends_on
+        self.table_settings = table_settings
         self.without_rowid = without_rowid
         self.temporary = temporary
 
@@ -5286,7 +5298,8 @@ class DoesNotExist(Exception): pass
 class ModelBase(type):
     inheritable = set(['constraints', 'database', 'indexes', 'primary_key',
                        'options', 'schema', 'table_function', 'temporary',
-                       'only_save_dirty', 'legacy_table_names'])
+                       'only_save_dirty', 'legacy_table_names',
+                       'table_settings'])
 
     def __new__(cls, name, bases, attrs):
         if name == MODEL_BASE or bases[0].__name__ == MODEL_BASE:

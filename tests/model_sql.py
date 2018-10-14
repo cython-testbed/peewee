@@ -78,6 +78,35 @@ class TestModelSQL(ModelDatabaseTestCase):
             'LEFT OUTER JOIN "tweet" AS "t2" ON ("t2"."user_id" = "t1"."id") '
             'GROUP BY "t1"."id", "t1"."username"'), [])
 
+    def test_group_by_extend(self):
+        query = (User
+                 .select(User, fn.COUNT(Tweet.id).alias('tweet_count'))
+                 .join(Tweet, JOIN.LEFT_OUTER)
+                 .group_by_extend(User.id).group_by_extend(User.username))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username", '
+            'COUNT("t2"."id") AS "tweet_count" '
+            'FROM "users" AS "t1" '
+            'LEFT OUTER JOIN "tweet" AS "t2" ON ("t2"."user_id" = "t1"."id") '
+            'GROUP BY "t1"."id", "t1"."username"'), [])
+
+    def test_order_by(self):
+        query = (User
+                 .select()
+                 .order_by(User.username.desc(), User.id))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username" FROM "users" AS "t1" '
+            'ORDER BY "t1"."username" DESC, "t1"."id"'), [])
+
+    def test_order_by_extend(self):
+        query = (User
+                 .select()
+                 .order_by_extend(User.username.desc())
+                 .order_by_extend(User.id))
+        self.assertSQL(query, (
+            'SELECT "t1"."id", "t1"."username" FROM "users" AS "t1" '
+            'ORDER BY "t1"."username" DESC, "t1"."id"'), [])
+
     def test_subquery_correction(self):
         users = User.select().where(User.username.in_(['foo', 'bar']))
         query = Tweet.select().where(Tweet.user.in_(users))
