@@ -46,7 +46,7 @@ services:
   - mariadb
 install: "pip install psycopg2-binary Cython pymysql apsw mysql-connector"
 before_script:
-  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/c9eda12b4806fba3931f7b791be7a672c92d9ca0.zip
+  - pip install --install-option="--no-cython-compile" https://github.com/cython/cython/archive/443369fc35ac35525eb4241548cad79d0c94f8dc.zip
   - python setup.py build_ext -i
   - psql -c 'drop database if exists peewee_test;' -U postgres
   - psql -c 'create database peewee_test;' -U postgres
