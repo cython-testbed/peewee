@@ -4,6 +4,8 @@ except ImportError:
     from urllib.parse import parse_qsl, unquote, urlparse
 
 from peewee import *
+from playhouse.cockroachdb import CockroachDatabase
+from playhouse.cockroachdb import PooledCockroachDatabase
 from playhouse.pool import PooledMySQLDatabase
 from playhouse.pool import PooledPostgresqlDatabase
 from playhouse.pool import PooledSqliteDatabase
@@ -12,6 +14,10 @@ from playhouse.sqlite_ext import SqliteExtDatabase
 
 
 schemes = {
+    'cockroachdb': CockroachDatabase,
+    'cockroachdb+pool': PooledCockroachDatabase,
+    'crdb': CockroachDatabase,
+    'crdb+pool': PooledCockroachDatabase,
     'mysql': MySQLDatabase,
     'mysql+pool': PooledMySQLDatabase,
     'postgres': PostgresqlDatabase,

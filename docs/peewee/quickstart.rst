@@ -368,6 +368,11 @@ a *JOIN* and using a SQL function to aggregate the results.
     # Grandma L. 0 pets
     # Herb 1 pets
 
+.. note::
+    Peewee provides a magical helper :py:func:`fn`, which can be used to call
+    any SQL function. In the above example, ``fn.COUNT(Pet.id).alias('pet_count')``
+    would be translated into ``COUNT(pet.id) AS pet_count``.
+
 Now let's list all the people and the names of all their pets. As you may have
 guessed, this could easily turn into another :ref:`N+1 <nplusone>` situation if
 we're not careful.
@@ -439,8 +444,11 @@ start with either an upper or lower-case *G*:
     # prints:
     # Grandma L.
 
-Closing the database
---------------------
+This is just the basics! You can make your queries as complex as you like.
+Check the documentation on :ref:`querying` for more info.
+
+Database
+--------
 
 We're done with our database, let's close the connection:
 
@@ -448,11 +456,18 @@ We're done with our database, let's close the connection:
 
     db.close()
 
-This is just the basics! You can make your queries as complex as you like.
-Check the documentation on :ref:`querying` for more info.
+In an actual application, there are some established patterns for how you would
+manage your database connection lifetime. For example, a web application will
+typically open a connection at start of request, and close the connection after
+generating the response. A :ref:`connection pool <connection_pooling>` can help
+eliminate latency associated with startup costs.
+
+To learn about setting up your database, see the :ref:`database` documentation,
+which provides many examples. Peewee also supports :ref:`configuring the database at run-time <deferring_initialization>`
+as well as setting or changing the database at any time.
 
 Working with existing databases
--------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 If you already have a database, you can autogenerate peewee models using
 :ref:`pwiz`. For instance, if I have a postgresql database named
