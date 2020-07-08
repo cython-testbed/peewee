@@ -2,6 +2,7 @@ from peewee import *
 
 from .base import DatabaseTestCase
 from .base import IS_CRDB
+from .base import IS_CRDB_NESTED_TX
 from .base import IS_SQLITE
 from .base import ModelTestCase
 from .base import db
@@ -23,7 +24,8 @@ class BaseTransactionTestCase(ModelTestCase):
 
 
 def requires_nested(fn):
-    return skip_if(IS_CRDB, 'nested transaction support is required')(fn)
+    return skip_if(IS_CRDB and not IS_CRDB_NESTED_TX,
+                   'nested transaction support is required')(fn)
 
 
 class TestTransaction(BaseTransactionTestCase):
@@ -279,6 +281,15 @@ class TestSession(BaseTransactionTestCase):
         self._save(3)
         self.assertTrue(db.session_rollback())
         self.assertRegister([1])
+
+    def test_session_with_closed_db(self):
+        db.close()
+        self.assertTrue(db.session_start())
+        self.assertFalse(db.is_closed())
+        self.assertRaises(OperationalError, db.close)
+        self._save(1)
+        self.assertTrue(db.session_rollback())
+        self.assertRegister([])
 
     def test_session_inside_context_manager(self):
         with db.atomic():

@@ -685,7 +685,7 @@ currently:
 * :py:class:`JSONField` field type, for storing JSON data.
 * :py:class:`BinaryJSONField` field type for the ``jsonb`` JSON data type.
 * :py:class:`TSVectorField` field type, for storing full-text search data.
-* :py:class:`DateTimeTZ` field type, a timezone-aware datetime field.
+* :py:class:`DateTimeTZField` field type, a timezone-aware datetime field.
 
 In the future I would like to add support for more of postgresql's features.
 If there is a particular feature you would like to see added, please
@@ -1843,10 +1843,12 @@ you wish to export:
 API
 ^^^
 
-.. py:class:: DataSet(url)
+.. py:class:: DataSet(url, **kwargs)
 
     :param url: A database URL or a :py:class:`Database` instance. For
         details on using a URL, see :ref:`db_url` for examples.
+    :param kwargs: additional keyword arguments passed to
+        :py:meth:`Introspector.generate_models` when introspecting the db.
 
     The *DataSet* class provides a high-level API for working with relational
     databases.
@@ -2545,6 +2547,20 @@ helpers for serializing models to dictionaries and vice-versa.
     :param bool ignore_unknown: Whether to allow unrecognized (non-field) attributes.
 
     Update a model instance with the given data dictionary.
+
+
+.. py:function:: resolve_multimodel_query(query[, key='_model_identifier'])
+
+    :param query: a compound select query.
+    :param str key: key to use for storing model identifier
+    :return: an iteratable cursor that yields the proper model instance for
+        each row selected in the compound select query.
+
+    Helper for resolving rows returned in a compound select query to the
+    correct model instance type. For example, if you have a union of two
+    different tables, this helper will resolve each row to the proper model
+    when iterating over the query results.
+
 
 .. _signals:
 

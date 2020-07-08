@@ -65,7 +65,7 @@ except ImportError:
         mysql = None
 
 
-__version__ = '3.13.2'
+__version__ = '3.13.3'
 __all__ = [
     'AsIs',
     'AutoField',
@@ -616,8 +616,6 @@ class Context(object):
     def value(self, value, converter=None, add_param=True):
         if converter:
             value = converter(value)
-            if isinstance(value, Node):
-                return self.sql(value)
         elif converter is None and self.state.converter:
             # Explicitly check for None so that "False" can be used to signify
             # that no conversion should be applied.
@@ -625,6 +623,13 @@ class Context(object):
 
         if isinstance(value, Node):
             with self(converter=None):
+                return self.sql(value)
+        elif is_model(value):
+            # Under certain circumstances, we could end-up treating a model-
+            # class itself as a value. This check ensures that we drop the
+            # table alias into the query instead of trying to parameterize a
+            # model (for instance, passing a model as a function argument).
+            with self.scope_column():
                 return self.sql(value)
 
         self._values.append(value)
@@ -822,6 +827,15 @@ class _HashableSource(object):
         if isinstance(other, _HashableSource):
             return self._hash != other._hash
         return Expression(self, OP.NE, other)
+
+    def _e(op):
+        def inner(self, rhs):
+            return Expression(self, op, rhs)
+        return inner
+    __lt__ = _e(OP.LT)
+    __le__ = _e(OP.LTE)
+    __gt__ = _e(OP.GT)
+    __ge__ = _e(OP.GTE)
 
 
 def __bind_database__(meth):
@@ -1344,14 +1358,6 @@ class Value(ColumnBase):
             # For multi-part values (e.g. lists of IDs).
             return ctx.sql(EnclosedNodeList(self.values))
 
-        # Under certain circumstances, we could end-up treating a model-class
-        # itself as a value. This check ensures that we drop the table alias
-        # into the query instead of trying to parameterize a model (for
-        # instance, when passing a model as a function argument).
-        if is_model(self.value):
-            with ctx.scope_column():
-                return ctx.sql(self.value)
-
         return ctx.value(self.value, self.converter)
 
 
@@ -1727,10 +1733,12 @@ class NodeList(ColumnBase):
         self.nodes = nodes
         self.glue = glue
         self.parens = parens
-        if parens and len(self.nodes) == 1:
-            if isinstance(self.nodes[0], Expression):
-                # Hack to avoid double-parentheses.
-                self.nodes[0].flat = True
+        if parens and len(self.nodes) == 1 and \
+           isinstance(self.nodes[0], Expression) and \
+           not self.nodes[0].flat:
+            # Hack to avoid double-parentheses.
+            self.nodes = (self.nodes[0].clone(),)
+            self.nodes[0].flat = True
 
     def __sql__(self, ctx):
         n_nodes = len(self.nodes)
@@ -2239,7 +2247,7 @@ class CompoundSelectQuery(SelectBase):
 class Select(SelectBase):
     def __init__(self, from_list=None, columns=None, group_by=None,
                  having=None, distinct=None, windows=None, for_update=None,
-                 for_update_of=None, nowait=None, **kwargs):
+                 for_update_of=None, nowait=None, lateral=None, **kwargs):
         super(Select, self).__init__(**kwargs)
         self._from_list = (list(from_list) if isinstance(from_list, tuple)
                            else from_list) or []
@@ -2250,6 +2258,7 @@ class Select(SelectBase):
         self._for_update = for_update  # XXX: consider reorganizing.
         self._for_update_of = for_update_of
         self._for_update_nowait = nowait
+        self._lateral = lateral
 
         self._distinct = self._simple_distinct = None
         if distinct:
@@ -2332,6 +2341,10 @@ class Select(SelectBase):
         self._for_update_of = of
         self._for_update_nowait = nowait
 
+    @Node.copy
+    def lateral(self, lateral=True):
+        self._lateral = lateral
+
     def _get_query_key(self):
         return self._alias
 
@@ -2341,6 +2354,9 @@ class Select(SelectBase):
     def __sql__(self, ctx):
         if ctx.scope == SCOPE_COLUMN:
             return self.apply_column(ctx)
+
+        if self._lateral and ctx.scope == SCOPE_SOURCE:
+            ctx.literal('LATERAL ')
 
         is_subquery = ctx.subquery
         state = {
@@ -2964,7 +2980,7 @@ class Database(_callable_context_manager):
         self.thread_safe = thread_safe
         if thread_safe:
             self._state = _ConnectionLocal()
-            self._lock = threading.Lock()
+            self._lock = threading.RLock()
         else:
             self._state = _ConnectionState()
             self._lock = _NoopLock()
@@ -4408,7 +4424,12 @@ class ObjectIdAccessor(object):
 
     def __get__(self, instance, instance_type=None):
         if instance is not None:
-            return instance.__data__.get(self.field.name)
+            value = instance.__data__.get(self.field.name)
+            # Pull the object-id from the related object if it is not set.
+            if value is None and self.field.name in instance.__rel__:
+                rel_obj = instance.__rel__[self.field.name]
+                value = getattr(rel_obj, self.field.rel_field.name)
+            return value
         return self.field
 
     def __set__(self, instance, value):
@@ -5144,7 +5165,7 @@ class ForeignKeyField(Field):
 
     def db_value(self, value):
         if isinstance(value, self.rel_model):
-            value = value.get_id()
+            value = getattr(value, self.rel_field.name)
         return self.rel_field.db_value(value)
 
     def python_value(self, value):
@@ -6176,12 +6197,14 @@ class _BoundModelsContext(_callable_context_manager):
         self._orig_database = []
         for model in self.models:
             self._orig_database.append(model._meta.database)
-            model.bind(self.database, self.bind_refs, self.bind_backrefs)
+            model.bind(self.database, self.bind_refs, self.bind_backrefs,
+                       _exclude=set(self.models))
         return self.models
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         for model, db in zip(self.models, self._orig_database):
-            model.bind(db, self.bind_refs, self.bind_backrefs)
+            model.bind(db, self.bind_refs, self.bind_backrefs,
+                       _exclude=set(self.models))
 
 
 class Model(with_metaclass(ModelBase, Node)):
@@ -6228,8 +6251,10 @@ class Model(with_metaclass(ModelBase, Node)):
                     field = (key if isinstance(key, Field)
                              else cls._meta.combined[key])
                 except KeyError:
-                    raise ValueError('Unrecognized field name: "%s" in %s.' %
-                                     (key, data))
+                    if not isinstance(key, Node):
+                        raise ValueError('Unrecognized field name: "%s" in %s.'
+                                         % (key, data))
+                    field = key
                 normalized[field] = data[key]
         if kwargs:
             for key in kwargs:
@@ -6300,8 +6325,15 @@ class Model(with_metaclass(ModelBase, Node)):
             pk_fields = None
 
         fields = [cls._meta.fields[field_name] for field_name in field_names]
+        attrs = []
+        for field in fields:
+            if isinstance(field, ForeignKeyField):
+                attrs.append(field.object_id_name)
+            else:
+                attrs.append(field.name)
+
         for batch in batches:
-            accum = ([getattr(model, f) for f in field_names]
+            accum = ([getattr(model, f) for f in attrs]
                      for model in batch)
             res = cls.insert_many(accum, fields=fields).execute()
             if pk_fields and res is not None:
@@ -6328,6 +6360,8 @@ class Model(with_metaclass(ModelBase, Node)):
             batches = [model_list]
 
         n = 0
+        pk = cls._meta.primary_key
+
         for batch in batches:
             id_list = [model._pk for model in batch]
             update = {}
@@ -6337,8 +6371,8 @@ class Model(with_metaclass(ModelBase, Node)):
                     value = getattr(model, attr)
                     if not isinstance(value, Node):
                         value = field.to_value(value)
-                    accum.append((model._pk, value))
-                case = Case(cls._meta.primary_key, accum)
+                    accum.append((pk.to_value(model._pk), value))
+                case = Case(pk, accum)
                 update[field] = case
 
             n += (cls.update(update)
@@ -6466,6 +6500,9 @@ class Model(with_metaclass(ModelBase, Node)):
         self._populate_unsaved_relations(field_dict)
         rows = 1
 
+        if self._meta.auto_increment and pk_value is None:
+            field_dict.pop(pk_field.name, None)
+
         if pk_value is not None and not force_insert:
             if self._meta.composite_key:
                 for pk_part_name in pk_field.field_names:
@@ -6542,13 +6579,17 @@ class Model(with_metaclass(ModelBase, Node)):
                              converter=self._meta.primary_key.db_value))
 
     @classmethod
-    def bind(cls, database, bind_refs=True, bind_backrefs=True):
+    def bind(cls, database, bind_refs=True, bind_backrefs=True, _exclude=None):
         is_different = cls._meta.database is not database
         cls._meta.set_database(database)
         if bind_refs or bind_backrefs:
+            if _exclude is None:
+                _exclude = set()
             G = cls._meta.model_graph(refs=bind_refs, backrefs=bind_backrefs)
             for _, model, is_backref in G:
-                model._meta.set_database(database)
+                if model not in _exclude:
+                    model._meta.set_database(database)
+                    _exclude.add(model)
         return is_different
 
     @classmethod

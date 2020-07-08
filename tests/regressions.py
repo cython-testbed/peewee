@@ -1,8 +1,12 @@
 import datetime
 import json
+import sys
+import uuid
 
 from peewee import *
 from playhouse.hybrid import *
+from playhouse.migrate import migrate
+from playhouse.migrate import SchemaMigrator
 
 from .base import BaseTestCase
 from .base import IS_MYSQL
@@ -1173,3 +1177,220 @@ class TestCompositePKwithFK(ModelTestCase):
         with self.assertQueryCount(1):
             self.assertEqual([(r.key, r.cpk.name) for r in query],
                              [('k1', 'c1'), ('k2', 'c1'), ('k3', 'c2')])
+
+
+class TestChainWhere(ModelTestCase):
+    requires = [User]
+
+    def test_chain_where(self):
+        for username in 'abcd':
+            User.create(username=username)
+
+        q = (User.select()
+             .where(User.username != 'a')
+             .where(User.username != 'd')
+             .order_by(User.username))
+        self.assertEqual([u.username for u in q], ['b', 'c'])
+
+        q = (User.select()
+             .where(User.username != 'a')
+             .where(User.username != 'd')
+             .where(User.username == 'b'))
+        self.assertEqual([u.username for u in q], ['b'])
+
+
+class BCUser(TestModel):
+    username = CharField(unique=True)
+
+class BCTweet(TestModel):
+    user = ForeignKeyField(BCUser, field=BCUser.username)
+    content = TextField()
+
+
+class TestBulkCreateWithFK(ModelTestCase):
+    @requires_models(BCUser, BCTweet)
+    def test_bulk_create_with_fk(self):
+        u1 = BCUser.create(username='u1')
+        u2 = BCUser.create(username='u2')
+        with self.assertQueryCount(1):
+            BCTweet.bulk_create([
+                BCTweet(user='u1', content='t%s' % i)
+                for i in range(4)])
+
+        self.assertEqual(BCTweet.select().where(BCTweet.user == 'u1').count(), 4)
+        self.assertEqual(BCTweet.select().where(BCTweet.user != 'u1').count(), 0)
+
+        u = BCUser(username='u3')
+        t = BCTweet(user=u, content='tx')
+        with self.assertQueryCount(2):
+            BCUser.bulk_create([u])
+            BCTweet.bulk_create([t])
+
+        with self.assertQueryCount(1):
+            t_db = (BCTweet
+                    .select(BCTweet, BCUser)
+                    .join(BCUser)
+                    .where(BCUser.username == 'u3')
+                    .get())
+            self.assertEqual(t_db.content, 'tx')
+            self.assertEqual(t_db.user.username, 'u3')
+
+    @requires_postgresql
+    @requires_models(User, Tweet)
+    def test_bulk_create_related_objects(self):
+        u = User(username='u1')
+        t = Tweet(user=u, content='t1')
+        with self.assertQueryCount(2):
+            User.bulk_create([u])
+            Tweet.bulk_create([t])
+
+        with self.assertQueryCount(1):
+            t_db = Tweet.select(Tweet, User).join(User).get()
+            self.assertEqual(t_db.content, 't1')
+            self.assertEqual(t_db.user.username, 'u1')
+
+
+class UUIDReg(TestModel):
+    id = UUIDField(primary_key=True, default=uuid.uuid4)
+    key = TextField()
+
+
+class TestBulkUpdateUUIDPK(ModelTestCase):
+    requires = [UUIDReg]
+
+    @skip_if(sys.version_info[0] == 2)
+    def test_bulk_update_uuid_pk(self):
+        r1 = UUIDReg.create(key='k1')
+        r2 = UUIDReg.create(key='k2')
+        r1.key = 'k1-x'
+        r2.key = 'k2-x'
+        UUIDReg.bulk_update((r1, r2), (UUIDReg.key,))
+
+        r1_db, r2_db = UUIDReg.select().order_by(UUIDReg.key)
+        self.assertEqual(r1_db.key, 'k1-x')
+        self.assertEqual(r2_db.key, 'k2-x')
+
+
+class TestSaveClearingPK(ModelTestCase):
+    requires = [User, Tweet]
+
+    def test_save_clear_pk(self):
+        u = User.create(username='u1')
+        t1 = Tweet.create(content='t1', user=u)
+        orig_id, t1.id = t1.id, None
+        t1.content = 't2'
+        t1.save()
+        self.assertTrue(t1.id is not None)
+        self.assertTrue(t1.id != orig_id)
+        tweets = [t.content for t in u.tweets.order_by(Tweet.id)]
+        self.assertEqual(tweets, ['t1', 't2'])
+
+
+class Bits(TestModel):
+    b1 = BitField(default=1)
+    b1_1 = b1.flag(1)
+    b1_2 = b1.flag(2)
+
+    b2 = BitField(default=0)
+    b2_1 = b2.flag()
+    b2_2 = b2.flag()
+
+
+class TestBitFieldName(ModelTestCase):
+    requires = [Bits]
+
+    def assertBits(self, bf, expected):
+        b1_1, b1_2, b2_1, b2_2 = expected
+        self.assertEqual(bf.b1_1, b1_1)
+        self.assertEqual(bf.b1_2, b1_2)
+        self.assertEqual(bf.b2_1, b2_1)
+        self.assertEqual(bf.b2_2, b2_2)
+
+    def test_bit_field_name(self):
+        bf = Bits.create()
+        self.assertBits(bf, (True, False, False, False))
+
+        bf.b1_1 = False
+        bf.b1_2 = True
+        bf.b2_1 = True
+        bf.save()
+        self.assertBits(bf, (False, True, True, False))
+
+        bf = Bits.get(Bits.id == bf.id)
+        self.assertBits(bf, (False, True, True, False))
+
+        self.assertEqual(bf.b1, 2)
+        self.assertEqual(bf.b2, 1)
+
+        self.assertEqual(Bits.select().where(Bits.b1_2).count(), 1)
+        self.assertEqual(Bits.select().where(Bits.b2_2).count(), 0)
+
+
+class FKMA(TestModel):
+    name = TextField()
+
+class FKMB(TestModel):
+    name = TextField()
+    fkma = ForeignKeyField(FKMA, backref='fkmb_set', null=True)
+
+
+class TestFKMigrationRegression(ModelTestCase):
+    requires = [FKMA, FKMB]
+
+    def test_fk_migration(self):
+        migrator = SchemaMigrator.from_database(self.database)
+        migrate(migrator.drop_column(
+            FKMB._meta.table_name,
+            FKMB.fkma.column_name))
+
+        migrate(migrator.add_column(
+            FKMB._meta.table_name,
+            FKMB.fkma.column_name,
+            FKMB.fkma))
+
+        fa = FKMA.create(name='fa')
+        FKMB.create(name='fb', fkma=fa)
+        obj = FKMB.select().first()
+        self.assertEqual(obj.name, 'fb')
+
+
+class ModelTypeField(CharField):
+    def db_value(self, value):
+        if value is not None:
+            return value._meta.name
+    def python_value(self, value):
+        if value is not None:
+            return {'user': User, 'tweet': Tweet}[value]
+
+
+class MTF(TestModel):
+    name = TextField()
+    mtype = ModelTypeField()
+
+
+class TestFieldValueRegression(ModelTestCase):
+    requires = [MTF]
+
+    def test_field_value_regression(self):
+        u = MTF.create(name='user', mtype=User)
+        u_db = MTF.get()
+
+        self.assertEqual(u_db.name, 'user')
+        self.assertTrue(u_db.mtype is User)
+
+
+class NLM(TestModel):
+    a = IntegerField()
+    b = IntegerField()
+
+class TestRegressionNodeListClone(ModelTestCase):
+    requires = [NLM]
+
+    def test_node_list_clone_expr(self):
+        expr = (NLM.a + NLM.b)
+        query = NLM.select(expr.alias('expr')).order_by(expr).distinct(expr)
+        self.assertSQL(query, (
+            'SELECT DISTINCT ON ("t1"."a" + "t1"."b") '
+            '("t1"."a" + "t1"."b") AS "expr" '
+            'FROM "nlm" AS "t1" '
+            'ORDER BY ("t1"."a" + "t1"."b")'), [])
